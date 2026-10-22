@@ -1,374 +1,818 @@
+
 import { useEffect, useRef, useState } from 'react';
 import {
-ArrowUp, AudioLines, Check, Copy, Mic, Plus, Sparkles, Volume2
+  ArrowUp,
+  AudioLines,
+  Check,
+  Copy,
+  MessageSquare,
+  Mic,
+  Plus,
+  Sparkles,
+  Trash2,
+  Volume2,
+  X,
 } from 'lucide-react';
 
-type Message = { role: 'user' | 'assistant'; content: string };
+type Message = {
+  role: 'user' | 'assistant';
+  content: string;
+};
 
-const API_URL = 'https://yashaibackend.yashkishorepower123.workers.dev/';
+type Conversation = {
+  id: string;
+  title: string;
+  updatedAt: number;
+  messages: Message[];
+};
+
+const API_URL =
+  'https://yashaibackend.yashkishorepower123.workers.dev/';
+
+const HISTORY_KEY = 'yash-ai-conversations';
+const ACTIVE_KEY = 'yash-ai-active';
+const LEGACY_KEY = 'yash-ai-chat';
+const MAX_CONVERSATIONS = 40;
 
 const welcome: Message = {
-role: 'assistant',
-content: 'Hey Yash, I’m ready. Ask me anything, or choose a suggestion below to get started.'
+  role: 'assistant',
+  content:
+    'Hello! Welcome to Yash AI. I’m here to help you learn, explore ideas, write code, solve problems, and get creative. What would you like to work on?',
 };
 
 const suggestions = [
-{ icon: '✦', title: 'Explain a concept', prompt: 'Explain how artificial intelligence works in simple terms.' },
-{ icon: '⌘', title: 'Help me code', prompt: 'Help me write a clean JavaScript function and explain it.' },
-{ icon: '◷', title: 'Plan my day', prompt: 'Help me make a balanced and productive plan for today.' },
-{ icon: '↗', title: 'Explore an idea', prompt: 'Suggest an interesting project I can build and learn from.' }
+  {
+    icon: '✦',
+    title: 'Explain a concept',
+    prompt:
+      'Explain how artificial intelligence works in simple terms.',
+  },
+  {
+    icon: '⌘',
+    title: 'Help me code',
+    prompt:
+      'Help me write a JavaScript function and explain how it works.',
+  },
+  {
+    icon: '◷',
+    title: 'Plan my day',
+    prompt:
+      'Help me make a balanced and productive plan for today.',
+  },
+  {
+    icon: '↗',
+    title: 'Explore an idea',
+    prompt:
+      'Suggest an interesting project I can build and learn from.',
+  },
 ];
+
+function makeId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function titleFromMessages(messages: Message[]) {
+  const firstUserMessage = messages.find(
+    (message) => message.role === 'user',
+  );
+
+  if (!firstUserMessage) return 'New conversation';
+
+  const title = firstUserMessage.content.replace(/\s+/g, ' ').trim();
+
+  return title.length > 36 ? `${title.slice(0, 36)}…` : title;
+}
+
+function makeConversation(
+  messages: Message[] = [welcome],
+): Conversation {
+  return {
+    id: makeId(),
+    title: titleFromMessages(messages),
+    updatedAt: Date.now(),
+    messages,
+  };
+}
+
+function isMessageArray(value: unknown): value is Message[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (message) =>
+        message &&
+        (message.role === 'user' ||
+          message.role === 'assistant') &&
+        typeof message.content === 'string',
+    )
+  );
+}
+
+function readSavedConversations(): Conversation[] {
+  try {
+    const saved = localStorage.getItem(HISTORY_KEY);
+
+    if (saved !== null) {
+      const parsed: unknown = JSON.parse(saved);
+
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (item): item is Conversation =>
+            Boolean(
+              item &&
+                typeof item.id === 'string' &&
+                typeof item.title === 'string' &&
+                typeof item.updatedAt === 'number' &&
+                isMessageArray(item.messages),
+            ),
+        );
+      }
+
+      return [];
+    }
+
+    // Migrate conversations from the older single-chat version.
+    const legacy = localStorage.getItem(LEGACY_KEY);
+
+    if (legacy) {
+      const parsed: unknown = JSON.parse(legacy);
+
+      if (isMessageArray(parsed)) {
+        const migrated = makeConversation(parsed);
+
+        localStorage.setItem(
+          HISTORY_KEY,
+          JSON.stringify([migrated]),
+        );
+        localStorage.setItem(ACTIVE_KEY, migrated.id);
+
+        return [migrated];
+      }
+    }
+  } catch (error) {
+    console.warn('Could not load conversation history:', error);
+  }
+
+  return [];
+}
+
+function getInitialActiveId(
+  conversations: Conversation[],
+): string {
+  try {
+    const savedId = localStorage.getItem(ACTIVE_KEY);
+
+    if (
+      savedId &&
+      conversations.some(
+        (conversation) => conversation.id === savedId,
+      )
+    ) {
+      return savedId;
+    }
+  } catch {
+    // Use the first available conversation.
+  }
+
+  return conversations[0]?.id ?? '';
+}
 
 export default function App() {
-const [messages, setMessages] = useState<Message[]>(() => {
-try {
-return JSON.parse(localStorage.getItem('yash-ai-chat') || 'null') || [welcome];
-} catch {
-return [welcome];
-}
-});
+  const [initialConversations] = useState<Conversation[]>(() => {
+    const saved = readSavedConversations();
 
-const [input, setInput] = useState('');
-const [busy, setBusy] = useState(false);
-const [voice, setVoice] = useState(false);
-const [copied, setCopied] = useState<number | null>(null);
-const endRef = useRef<HTMLDivElement>(null);
-const inputRef = useRef<HTMLTextAreaElement>(null);
-
-useEffect(() => {
-localStorage.setItem('yash-ai-chat', JSON.stringify(messages));
-endRef.current?.scrollIntoView({ behavior: 'smooth' });
-}, [messages, busy]);
-
-async function send(text = input) {
-const clean = text.trim();
-if (!clean || busy) return;
-
-const next: Message[] = [
-  ...messages,
-  { role: 'user', content: clean }
-];
-
-setMessages(next);
-setInput('');
-setBusy(true);
-
-try {
-  const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      messages: next.slice(-16)
-    })
+    return saved.length > 0
+      ? saved
+      : [makeConversation([welcome])];
   });
 
-  const result = await response.json();
+  const [conversations, setConversations] =
+    useState<Conversation[]>(initialConversations);
 
-  if (!response.ok) {
-    throw new Error(
-      typeof result.error === 'string'
-        ? result.error
-        : 'The AI request failed.'
+  const [activeId, setActiveId] = useState(
+    () => getInitialActiveId(initialConversations),
+  );
+
+  const [input, setInput] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [voice, setVoice] = useState(false);
+  const [copied, setCopied] = useState<number | null>(null);
+  const [mobileHistoryOpen, setMobileHistoryOpen] =
+    useState(false);
+
+  const endRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const activeConversation =
+    conversations.find(
+      (conversation) => conversation.id === activeId,
+    ) ?? null;
+
+  const messages = activeConversation?.messages ?? [welcome];
+
+  const fresh =
+    messages.length === 1 &&
+    messages[0]?.role === 'assistant';
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        HISTORY_KEY,
+        JSON.stringify(conversations),
+      );
+
+      if (activeId) {
+        localStorage.setItem(ACTIVE_KEY, activeId);
+      } else {
+        localStorage.removeItem(ACTIVE_KEY);
+      }
+    } catch (error) {
+      console.warn('Could not save conversation history:', error);
+    }
+  }, [conversations, activeId]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({
+      behavior: 'smooth',
+    });
+  }, [messages, busy, activeId]);
+
+  function updateConversationMessages(
+    conversationId: string,
+    nextMessages: Message[],
+  ) {
+    setConversations((current) =>
+      current
+        .map((conversation) =>
+          conversation.id === conversationId
+            ? {
+                ...conversation,
+                messages: nextMessages,
+                title: titleFromMessages(nextMessages),
+                updatedAt: Date.now(),
+              }
+            : conversation,
+        )
+        .sort((a, b) => b.updatedAt - a.updatedAt),
     );
   }
 
-  if (typeof result.text !== 'string') {
-    throw new Error('The server returned an invalid response.');
+  function newConversation() {
+    const conversation = makeConversation([welcome]);
+
+    setConversations((current) =>
+      [conversation, ...current].slice(0, MAX_CONVERSATIONS),
+    );
+
+    setActiveId(conversation.id);
+    setInput('');
+    setMobileHistoryOpen(false);
+    window.speechSynthesis?.cancel();
+    inputRef.current?.focus();
   }
 
-  setMessages([
-    ...next,
-    {
-      role: 'assistant',
-      content: result.text
+  function openConversation(id: string) {
+    setActiveId(id);
+    setInput('');
+    setMobileHistoryOpen(false);
+    window.speechSynthesis?.cancel();
+  }
+
+  function deleteConversation(id: string) {
+    const remaining = conversations.filter(
+      (conversation) => conversation.id !== id,
+    );
+
+    if (id === activeId) {
+      if (remaining.length > 0) {
+        setActiveId(remaining[0].id);
+        setConversations(remaining);
+      } else {
+        const replacement = makeConversation([welcome]);
+        setConversations([replacement]);
+        setActiveId(replacement.id);
+      }
+    } else {
+      setConversations(remaining);
     }
-  ]);
-} catch (error) {
-  console.error('Yash AI request failed:', error);
+  }
 
-  const errorMessage =
-    error instanceof Error && error.message
-      ? error.message
-      : 'Unknown connection error';
+  async function send(text = input) {
+    const clean = text.trim();
 
-  setMessages([
-    ...next,
-    {
-      role: 'assistant',
-      content: `I couldn’t connect to the AI service. ${errorMessage} Please check the Cloudflare Worker and try again.`
+    if (!clean || busy) return;
+
+    let conversationId = activeId;
+    let currentMessages = messages;
+
+    if (!activeConversation) {
+      const created = makeConversation([welcome]);
+
+      conversationId = created.id;
+      currentMessages = created.messages;
+
+      setConversations((current) =>
+        [created, ...current].slice(0, MAX_CONVERSATIONS),
+      );
+
+      setActiveId(created.id);
     }
-  ]);
-} finally {
-  setBusy(false);
-  inputRef.current?.focus();
-}
 
-}
+    const nextMessages: Message[] = [
+      ...currentMessages,
+      { role: 'user', content: clean },
+    ];
 
-function startVoice() {
-const w = window as Window & {
-SpeechRecognition?: new () => any;
-webkitSpeechRecognition?: new () => any;
-};
+    setInput('');
+    setBusy(true);
 
-const SpeechRecognition =
-  w.SpeechRecognition || w.webkitSpeechRecognition;
+    updateConversationMessages(
+      conversationId,
+      nextMessages,
+    );
 
-if (!SpeechRecognition) {
-  setInput('Voice input is not supported in this browser.');
-  return;
-}
+    try {
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: nextMessages.slice(-16),
+        }),
+      });
 
-const recognition = new SpeechRecognition();
-recognition.lang = 'en-US';
-recognition.onresult = (event: any) => {
-  setInput(event.results[0][0].transcript);
-};
-recognition.onend = () => setVoice(false);
-recognition.onerror = () => setVoice(false);
+      const result = await response.json();
 
-setVoice(true);
-recognition.start();
+      if (!response.ok) {
+        throw new Error(
+          typeof result.error === 'string'
+            ? result.error
+            : 'The AI request failed.',
+        );
+      }
 
-}
+      if (typeof result.text !== 'string') {
+        throw new Error(
+          'The server returned an invalid response.',
+        );
+      }
 
-function speak(text: string) {
-if (!('speechSynthesis' in window)) return;
+      updateConversationMessages(conversationId, [
+        ...nextMessages,
+        {
+          role: 'assistant',
+          content: result.text,
+        },
+      ]);
+    } catch (error) {
+      console.error('Yash AI request failed:', error);
 
-window.speechSynthesis.cancel();
-window.speechSynthesis.speak(
-  new SpeechSynthesisUtterance(text)
-);
+      const reason =
+        error instanceof Error
+          ? error.message
+          : 'Unknown connection error';
 
-}
+      updateConversationMessages(conversationId, [
+        ...nextMessages,
+        {
+          role: 'assistant',
+          content:
+            `I couldn’t connect to the AI service. ${reason} ` +
+            'Please check your connection and try again.',
+        },
+      ]);
+    } finally {
+      setBusy(false);
+      inputRef.current?.focus();
+    }
+  }
 
-async function copy(text: string, index: number) {
-try {
-await navigator.clipboard.writeText(text);
-setCopied(index);
-window.setTimeout(() => setCopied(null), 1500);
-} catch {
-setCopied(null);
-}
-}
+  function startVoice() {
+    const browser = window as Window & {
+      SpeechRecognition?: new () => any;
+      webkitSpeechRecognition?: new () => any;
+    };
 
-const fresh = messages.length === 1;
+    const SpeechRecognition =
+      browser.SpeechRecognition ||
+      browser.webkitSpeechRecognition;
 
-return (
-<div className="shell">
-<aside className="sidebar">
-<div className="brand">
-<div className="brand-mark"><AudioLines size={22} /></div>
-<div>
-<strong>Yash AI</strong>
-<span>PERSONAL ASSISTANT</span>
-</div>
-</div>
+    if (!SpeechRecognition) {
+      setInput(
+        'Voice input is not supported in this browser. Try a supported browser.',
+      );
+      return;
+    }
 
-    <button
-      className="new-chat"
-      onClick={() => {
-        setMessages([welcome]);
-        setInput('');
-      }}
-    >
-      <Plus size={17} /> New conversation <span>⌘ K</span>
-    </button>
+    const recognition = new SpeechRecognition();
 
-    <div className="side-label">YOUR SPACE</div>
-    <div className="side-active">
-      <Sparkles size={17} /> Assistant <i className="live-dot" />
-    </div>
+    recognition.lang = 'en-US';
 
-    <div className="side-note">
-      <Sparkles size={16} />
-      <div>
-        <b>A little more capable.</b>
-        <p>Think, create, learn and build — all in one place.</p>
-      </div>
-    </div>
+    recognition.onresult = (event: any) => {
+      setInput(event.results[0][0].transcript);
+    };
 
-    <div className="sidebar-bottom">
-      <div className="avatar">Y</div>
-      <div className="profile">
-        <b>Yash</b>
-        <span>Personal workspace</span>
-      </div>
-    </div>
-  </aside>
+    recognition.onend = () => setVoice(false);
+    recognition.onerror = () => setVoice(false);
 
-  <main className="main">
-    <header className="topbar">
-      <div className="mobile-brand">
-        <div className="brand-mark"><AudioLines size={19} /></div>
-        <b>Yash AI</b>
-      </div>
+    setVoice(true);
+    recognition.start();
+  }
 
-      <div className="status">
-        <i className="live-dot" /> AI ASSISTANT <span>/</span> READY TO HELP
-      </div>
+  function speak(text: string) {
+    if (!('speechSynthesis' in window)) return;
 
-      <button
-        className="top-icon"
-        title="New conversation"
-        onClick={() => {
-          setMessages([welcome]);
-          setInput('');
-        }}
-      >
-        <Plus size={18} />
-      </button>
-    </header>
+    window.speechSynthesis.cancel();
 
-    <section className="conversation">
-      {fresh ? (
-        <div className="welcome">
-          <div className="eyebrow">
-            <Sparkles size={14} /> YOUR PERSONAL AI, REIMAGINED
-          </div>
+    window.speechSynthesis.speak(
+      new SpeechSynthesisUtterance(text),
+    );
+  }
 
-          <h1>A good question<br /><em>can change everything.</em></h1>
+  async function copy(text: string, index: number) {
+    try {
+      await navigator.clipboard.writeText(text);
 
-          <p className="welcome-copy">
-            Your thinking partner for ideas, code, learning, and whatever comes next.
+      setCopied(index);
+
+      window.setTimeout(() => setCopied(null), 1500);
+    } catch {
+      setCopied(null);
+    }
+  }
+
+  function renderHistory(mobile = false) {
+    return (
+      <>
+        {conversations.length === 0 ? (
+          <p className="history-empty">
+            Your conversations will appear here.
           </p>
-
-          <div className="suggestions">
-            {suggestions.map(item => (
-              <button
-                key={item.title}
-                className="suggestion"
-                onClick={() => void send(item.prompt)}
+        ) : (
+          <div className="history-list">
+            {conversations.map((conversation) => (
+              <div
+                className={
+                  'history-item ' +
+                  (conversation.id === activeId
+                    ? 'selected'
+                    : '')
+                }
+                key={conversation.id}
               >
-                <span className="suggestion-icon">{item.icon}</span>
-                <span>
-                  <b>{item.title}</b>
-                  <small>{item.prompt}</small>
-                </span>
-                <span className="suggest-arrow">↗</span>
-              </button>
+                <button
+                  className="history-open"
+                  title={conversation.title}
+                  onClick={() =>
+                    openConversation(conversation.id)
+                  }
+                >
+                  <MessageSquare size={14} />
+                  <span>{conversation.title}</span>
+                </button>
+
+                <button
+                  className="history-delete"
+                  title="Delete conversation"
+                  aria-label={`Delete ${conversation.title}`}
+                  onClick={() =>
+                    deleteConversation(conversation.id)
+                  }
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             ))}
           </div>
+        )}
 
-          <div className="hint">
-            <i /> ASK ANYTHING. START SOMEWHERE. <i />
+        {mobile && (
+          <button
+            className="mobile-new-chat"
+            onClick={newConversation}
+          >
+            <Plus size={15} /> New conversation
+          </button>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-mark">
+            <AudioLines size={22} />
+          </div>
+
+          <div>
+            <strong>Yash AI</strong>
+            <span>AI FOR EVERYONE</span>
           </div>
         </div>
-      ) : (
-        <div className="messages">
-          {messages.map((message, index) => (
-            <article
-              className={'message ' + message.role}
-              key={index}
+
+        <button
+          className="new-chat"
+          onClick={newConversation}
+        >
+          <Plus size={17} />
+          New conversation
+          <span>⌘ K</span>
+        </button>
+
+        <div className="side-label">YOUR WORKSPACE</div>
+
+        <div className="side-active">
+          <Sparkles size={17} />
+          AI Assistant
+          <i className="live-dot" />
+        </div>
+
+        <div className="history-heading">
+          <span>HISTORY</span>
+          <span>
+            {conversations.length}/{MAX_CONVERSATIONS}
+          </span>
+        </div>
+
+        {renderHistory()}
+
+        <div className="side-note">
+          <Sparkles size={16} />
+          <div>
+            <b>Ideas have no borders.</b>
+            <p>
+              Learn, create, explore, and solve problems with AI.
+            </p>
+          </div>
+        </div>
+
+        <div className="sidebar-bottom">
+          <div className="avatar">
+            <Sparkles size={17} />
+          </div>
+
+          <div className="profile">
+            <b>AI Explorer</b>
+            <span>Your workspace</span>
+          </div>
+        </div>
+      </aside>
+
+      <main className="main">
+        <header className="topbar">
+          <div className="mobile-brand">
+            <div className="brand-mark">
+              <AudioLines size={19} />
+            </div>
+            <b>Yash AI</b>
+          </div>
+
+          <div className="status">
+            <i className="live-dot" />
+            AI ASSISTANT
+            <span>/</span>
+            READY TO HELP
+          </div>
+
+          <div className="top-actions">
+            <button
+              className="top-icon mobile-history-toggle"
+              title="Conversation history"
+              aria-label="Open conversation history"
+              onClick={() =>
+                setMobileHistoryOpen((open) => !open)
+              }
             >
-              <div className="message-avatar">
-                {message.role === 'assistant'
-                  ? <AudioLines size={16} />
-                  : 'Y'}
+              {mobileHistoryOpen ? (
+                <X size={18} />
+              ) : (
+                <MessageSquare size={18} />
+              )}
+            </button>
+
+            <button
+              className="top-icon"
+              title="New conversation"
+              aria-label="New conversation"
+              onClick={newConversation}
+            >
+              <Plus size={18} />
+            </button>
+          </div>
+        </header>
+
+        {mobileHistoryOpen && (
+          <div className="mobile-history-panel">
+            <div className="mobile-history-title">
+              <span>CONVERSATION HISTORY</span>
+              <span>{conversations.length}</span>
+            </div>
+
+            {renderHistory(true)}
+          </div>
+        )}
+
+        <section className="conversation">
+          {fresh ? (
+            <div className="welcome">
+              <div className="eyebrow">
+                <Sparkles size={14} />
+                YOUR AI, READY TO HELP
               </div>
 
-              <div className="message-body">
-                <div className="message-label">
-                  {message.role === 'assistant' ? 'YASH AI' : 'YOU'}
-                  <span>
-                    · {message.role === 'assistant' ? 'RESPONSE' : 'MESSAGE'}
-                  </span>
-                </div>
+              <h1>
+                A good question
+                <br />
+                <em>can change everything.</em>
+              </h1>
 
-                <div className="message-content">{message.content}</div>
+              <p className="welcome-copy">
+                Explore ideas, learn new skills, write code, solve
+                problems, and discover what you can create with AI.
+              </p>
 
-                {message.role === 'assistant' && (
-                  <div className="message-actions">
-                    <button onClick={() => void copy(message.content, index)}>
-                      {copied === index
-                        ? <Check size={14} />
-                        : <Copy size={14} />}
-                      {copied === index ? 'Copied' : 'Copy'}
-                    </button>
+              <div className="suggestions">
+                {suggestions.map((item) => (
+                  <button
+                    key={item.title}
+                    className="suggestion"
+                    onClick={() => void send(item.prompt)}
+                  >
+                    <span className="suggestion-icon">
+                      {item.icon}
+                    </span>
 
-                    <button onClick={() => speak(message.content)}>
-                      <Volume2 size={14} /> Read aloud
-                    </button>
+                    <span>
+                      <b>{item.title}</b>
+                      <small>{item.prompt}</small>
+                    </span>
+
+                    <span className="suggest-arrow">↗</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="hint">
+                <i />
+                ASK ANYTHING. START SOMEWHERE.
+                <i />
+              </div>
+            </div>
+          ) : (
+            <div className="messages">
+              {messages.map((message, index) => (
+                <article
+                  className={`message ${message.role}`}
+                  key={`${activeId}-${index}`}
+                >
+                  <div className="message-avatar">
+                    {message.role === 'assistant' ? (
+                      <AudioLines size={16} />
+                    ) : (
+                      'Y'
+                    )}
                   </div>
-                )}
-              </div>
-            </article>
-          ))}
 
-          {busy && (
-            <article className="message assistant">
-              <div className="message-avatar">
-                <AudioLines size={16} />
-              </div>
-              <div className="message-body">
-                <div className="message-label">YASH AI · THINKING</div>
-                <div className="thinking">
-                  <i /><i /><i /> <span>Working on it</span>
-                </div>
-              </div>
-            </article>
+                  <div className="message-body">
+                    <div className="message-label">
+                      {message.role === 'assistant'
+                        ? 'YASH AI'
+                        : 'YOU'}
+
+                      <span>
+                        {' '}
+                        ·{' '}
+                        {message.role === 'assistant'
+                          ? 'RESPONSE'
+                          : 'MESSAGE'}
+                      </span>
+                    </div>
+
+                    <div className="message-content">
+                      {message.content}
+                    </div>
+
+                    {message.role === 'assistant' && (
+                      <div className="message-actions">
+                        <button
+                          onClick={() =>
+                            void copy(message.content, index)
+                          }
+                        >
+                          {copied === index ? (
+                            <Check size={14} />
+                          ) : (
+                            <Copy size={14} />
+                          )}
+
+                          {copied === index
+                            ? 'Copied'
+                            : 'Copy'}
+                        </button>
+
+                        <button
+                          onClick={() => speak(message.content)}
+                        >
+                          <Volume2 size={14} />
+                          Read aloud
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </article>
+              ))}
+
+              {busy && (
+                <article className="message assistant">
+                  <div className="message-avatar">
+                    <AudioLines size={16} />
+                  </div>
+
+                  <div className="message-body">
+                    <div className="message-label">
+                      YASH AI · THINKING
+                    </div>
+
+                    <div className="thinking">
+                      <i />
+                      <i />
+                      <i />
+                      <span>Working on it</span>
+                    </div>
+                  </div>
+                </article>
+              )}
+
+              <div ref={endRef} />
+            </div>
           )}
+        </section>
 
-          <div ref={endRef} />
-        </div>
-      )}
-    </section>
+        <div className="composer-wrap">
+          <div className="composer">
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(event) =>
+                setInput(event.target.value)
+              }
+              onKeyDown={(event) => {
+                if (
+                  event.key === 'Enter' &&
+                  !event.shiftKey
+                ) {
+                  event.preventDefault();
+                  void send();
+                }
+              }}
+              placeholder="Ask anything…"
+              rows={2}
+            />
 
-    <div className="composer-wrap">
-      <div className="composer">
-        <textarea
-          ref={inputRef}
-          value={input}
-          onChange={event => setInput(event.target.value)}
-          onKeyDown={event => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-          placeholder="Ask anything… or tell me what you're working on"
-          rows={2}
-        />
+            <div className="composer-bottom">
+              <div className="composer-note">
+                <Sparkles size={14} />
+                Curious minds are welcome
+              </div>
 
-        <div className="composer-bottom">
-          <div className="composer-note">
-            <Sparkles size={14} /> Thoughtful answers, made for you
+              <div className="composer-controls">
+                <button
+                  className={`voice-btn ${
+                    voice ? 'recording' : ''
+                  }`}
+                  title="Use voice input"
+                  aria-label="Use voice input"
+                  onClick={startVoice}
+                >
+                  <Mic size={16} />
+                </button>
+
+                <button
+                  className="send-btn"
+                  disabled={!input.trim() || busy}
+                  onClick={() => void send()}
+                >
+                  <span>{busy ? 'Thinking' : 'Send'}</span>
+                  <ArrowUp size={16} />
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div className="composer-controls">
-            <button
-              className={'voice-btn ' + (voice ? 'recording' : '')}
-              title="Use voice input"
-              onClick={startVoice}
-            >
-              <Mic size={16} />
-            </button>
-
-            <button
-              className="send-btn"
-              disabled={!input.trim() || busy}
-              onClick={() => void send()}
-            >
-              <span>{busy ? 'Thinking' : 'Send'}</span>
-              <ArrowUp size={16} />
-            </button>
+          <div className="disclaimer">
+            Yash AI can make mistakes. Check important information.
           </div>
         </div>
-      </div>
 
-      <div className="disclaimer">
-        Yash AI can make mistakes. Check important information.
-      </div>
+        <footer>
+          <span>AI FOR EVERYONE</span>
+          <span>
+            CREATED BY <b>YASH</b> ✳
+          </span>
+        </footer>
+      </main>
     </div>
-
-    <footer>
-      <span>DESIGNED WITH INTENTION</span>
-      <span>CREATED BY <b>YASH</b> ✳</span>
-    </footer>
-  </main>
-</div>
-
-);
+  );
 }
