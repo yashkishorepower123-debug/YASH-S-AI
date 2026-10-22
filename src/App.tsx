@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { api } from '@appdeploy/client';
 import {
   ArrowUp, AudioLines, Check, Copy, Mic, Plus, Sparkles, Volume2
 } from 'lucide-react';
